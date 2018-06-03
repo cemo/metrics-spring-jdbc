@@ -1,10 +1,8 @@
 package com.aharwood.metrics.spring.jdbc;
 
-import com.yammer.metrics.core.MetricName;
-import com.yammer.metrics.core.MetricsRegistry;
-import com.yammer.metrics.core.Timer;
-import com.yammer.metrics.core.TimerContext;
-import java.util.concurrent.TimeUnit;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
+import java.util.function.Supplier;
 import javax.sql.DataSource;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.CallableStatementCallback;
@@ -20,7 +18,7 @@ public class InstrumentedJdbcTemplate extends JdbcTemplate {
 
     private static final String GROUP_NAME = "JdbcTemplate";
 
-    private MetricsRegistry metricsRegistry;
+    CompositeMeterRegistry globalRegistry = Metrics.globalRegistry;
 
     public InstrumentedJdbcTemplate() {
         super();
@@ -34,85 +32,68 @@ public class InstrumentedJdbcTemplate extends JdbcTemplate {
         super(dataSource, lazyInit);
     }
 
-    public MetricsRegistry getMetricsRegistry() {
-        return metricsRegistry;
-    }
-
-    public void setMetricsRegistry(MetricsRegistry metricsRegistry) {
-        this.metricsRegistry = metricsRegistry;
-    }
-
     @Override
     public <T> T execute(StatementCallback<T> action) throws DataAccessException {
-        TimerContext timer = null;
+        Supplier<T> supplier = () -> InstrumentedJdbcTemplate.super.execute(action);
+
         if (action instanceof SqlProvider) {
             SqlProvider sqlProvider = (SqlProvider) action;
             if (sqlProvider.getSql() == null) {
-                //probably a batch update.
-                timer = startTimer(new MetricName(GROUP_NAME, "execute", "StatementCallback", "batchUpdate"));
+                return globalRegistry.timer(GROUP_NAME, "execute", "StatementCallback", "batchUpdate", "true").record(supplier);
             } else {
-                timer = startTimer(sqlProvider, "execute.StatementCallback");
+                return globalRegistry.timer(GROUP_NAME,
+                                            "sql", sqlProvider.getSql(),
+                                            "execute", "StatementCallback",
+                                            "batchUpdate", "false")
+                                     .record(supplier);
+
             }
         }
 
-        try {
-            return super.execute(action);
-        } finally {
-            if (timer != null) {
-                timer.stop();
-            }
-        }
+        return supplier.get();
     }
 
     @Override
 	public <T> T execute(PreparedStatementCreator psc, PreparedStatementCallback<T> action) throws DataAccessException {
-        TimerContext timer = null;
+        Supplier<T> supplier = () -> InstrumentedJdbcTemplate.super.execute(psc, action);
         if (psc instanceof SqlProvider) {
-            timer = startTimer((SqlProvider) psc, "execute.PreparedStatementCreator.PreparedStatementCallback");
+            return globalRegistry.timer(GROUP_NAME,
+                                        "sql", ((SqlProvider)psc).getSql(),
+                                        "execute", "execute.PreparedStatementCreator.PreparedStatementCallback",
+                                        "batchUpdate", "true")
+                                 .record(supplier);
+        }else{
+            return supplier.get();
         }
 
-        try {
-            return super.execute(psc, action);
-        } finally {
-            if (timer != null) {
-                timer.stop();
-            }
-        }
     }
 
     @Override
     public <T> T execute(CallableStatementCreator csc, CallableStatementCallback<T> action) throws DataAccessException {
-        TimerContext timer = null;
-        if (csc instanceof SqlProvider) {
-            timer = startTimer((SqlProvider) csc, "callable.CallableStatementCreator.CallableStatementCallback");
-        } else {
-            timer = startTimer(new MetricName(GROUP_NAME, "callable", "CallableStatementCreator.CallableStatementCallback"));
-        }
+        Supplier<T> supplier = () -> InstrumentedJdbcTemplate.super.execute(csc, action);
 
-        try {
-            return super.execute(csc, action);
-        } finally {
-            timer.stop();
+        if (csc instanceof SqlProvider) {
+            return globalRegistry.timer(GROUP_NAME,
+                                        "sql", ((SqlProvider) csc).getSql(),
+                                        "execute", "callable.CallableStatementCreator.CallableStatementCallback",
+                                        "batchUpdate", "true")
+                                 .record(supplier);
+        } else {
+            return globalRegistry.timer(GROUP_NAME,
+                                        "execute", "callable.CallableStatementCreator.CallableStatementCallback",
+                                        "batchUpdate", "true")
+                                 .record(supplier);
         }
     }
 
     @Override
     public <T> T execute(ConnectionCallback<T> action) throws DataAccessException {
-        TimerContext timer = startTimer(new MetricName(GROUP_NAME, "connectionCallback", "ConnectionCallback"));
+        Supplier<T> supplier = () -> InstrumentedJdbcTemplate.super.execute(action);
 
-        try {
-            return super.execute(action);
-        } finally {
-            timer.stop();
-        }
+
+        return globalRegistry.timer(GROUP_NAME,
+                                    "execute", "connectionCallback")
+                             .record(supplier);
     }
 
-    protected TimerContext startTimer(SqlProvider sqlProvider, String type) {
-        return startTimer(new MetricName(GROUP_NAME, type, sqlProvider.getSql()));
-    }
-
-    protected TimerContext startTimer(MetricName metricName) {
-        Timer timer = this.metricsRegistry.newTimer(metricName, TimeUnit.MILLISECONDS, TimeUnit.SECONDS);
-        return timer.time();
-    }
 }
